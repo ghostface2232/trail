@@ -29,7 +29,9 @@ void main() {
   // 중앙(0.5)=풀스피드, 상하단(0/1)=거의 정지
   float distFromCenter = abs(vUV.y - 0.5) * 2.0;
   float slow = 1.0 - distFromCenter * distFromCenter;
-  vec2 offsetUV = vec2(vUV.x, vUV.y + uFeedbackOffset * slow);
+  // 서브픽셀 지터로 스텝 사이 줄무늬 방지
+  float jitter = (hash(vUV * 1000.0 + fract(uTime * 3333.0)) - 0.5) / uResolution.y;
+  vec2 offsetUV = vec2(vUV.x, vUV.y + uFeedbackOffset * slow + jitter);
 
   // 상하단 접근 시 서서히 확대 (60% 이상 구간부터 ease)
   float edgeDist = max(smoothstep(0.3, 0.0, vUV.y), smoothstep(0.3, 0.0, 1.0 - vUV.y));
@@ -128,7 +130,7 @@ void main() {
   // 전역 색수차 — 중심에서 멀수록 강하게
   vec2 center = vUV - 0.5;
   float dist = length(center);
-  float caStrength = dist * 25.0; // 색수차
+  float caStrength = dist * 30.0; // 색수차
   vec2 caOffset = center * caStrength * texel;
 
   float edge = max(smoothstep(0.25, 0.0, vUV.y), smoothstep(0.22, 0.0, 1.0 - vUV.y));

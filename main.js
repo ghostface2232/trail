@@ -247,7 +247,7 @@ function init() {
 
     const nowSec = now * 0.001;
 
-    const STAMP_EVERY = 4; // 4스텝마다 stamp (25→7회로 감소)
+    const STAMP_EVERY = 2; // 2스텝마다 stamp
     for (let s = 0; s <= STEPS; s++) {
       if (hasText && s % STAMP_EVERY === 0) {
         const subTime = now - FRAME_MS + (s / STEPS) * FRAME_MS;
