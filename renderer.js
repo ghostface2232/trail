@@ -59,7 +59,7 @@ function createFBO(width, height) {
   return { framebuffer: fb, texture: tex };
 }
 
-function createFBOPair(width, height) {
+export function createFBOPair(width, height) {
   return {
     read: createFBO(width, height),
     write: createFBO(width, height),
@@ -80,15 +80,18 @@ function resizeFBOs(width, height) {
   fbos = createFBOPair(width, height);
 }
 
+/** 프레임 시작 시 1회 호출 — viewport를 매 FBO 바인드마다 반복하지 않음 */
+export function setFrameViewport() {
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+}
+
 export function renderToFBO(fbo, drawCall) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer);
-  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
   drawCall();
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 
 export function renderToScreen(drawCall) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
   drawCall();
 }

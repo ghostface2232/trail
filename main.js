@@ -1,10 +1,10 @@
 /**
- * WebGL Text Trail — 클릭 위치에서 색이 순환하며 세로로 흘러내림
+ * WebGL Text Trail — 타이핑한 텍스트가 색이 순환하며 세로로 흘러내림
  */
 
 import {
-  initGL, getFBOs,
-  swapFBOs, renderToFBO, renderToScreen,
+  initGL, getFBOs, createFBOPair,
+  swapFBOs, renderToFBO, renderToScreen, setFrameViewport,
 } from './renderer.js';
 
 import {
@@ -13,6 +13,9 @@ import {
   screenFragmentSource,
   displayFragmentSource,
 } from './shaders.js';
+
+import { createTextLayer, renderText, getCanvas, resize as resizeTextLayer } from './text-layer.js';
+import { initInputHandler, getCurrentText } from './input-handler.js';
 
 // --- GL helpers ---
 
@@ -45,12 +48,14 @@ function createProgram(gl, vsSrc, fsSrc) {
 // --- Color cycle (Catmull-Rom + smootherstep) ---
 
 const COLORS = [
-  [0.15, 0.3, 1.0],   // blue
+  [1.0, 1.0, 1.0],    // white-blue flash
+  [0.45, 0.7, 0.95],  // sky blue
   [0.0, 0.0, 0.0],    // black
-  [1.0, 0.1, 0.15],   // red
+  [1.0, 0.35, 0.0],   // red-orange
+  [0.5, 0.12, 0.0],   // dark red-orange
   [0.0, 0.0, 0.0],    // black
 ];
-const COLOR_CYCLE_MS = 2051;
+const COLOR_CYCLE_MS = 2051 / 1.5 / 0.8 / 1.12;
 const FRAME_MS = 1000 / 60;
 
 function smootherstep(t) {
@@ -69,15 +74,24 @@ function catmullRom(p0, p1, p2, p3, t) {
 
 function getCycleColor(timeMs) {
   const n = COLORS.length;
-  const phase = ((timeMs % COLOR_CYCLE_MS) / COLOR_CYCLE_MS) * n;
+  const phase = ((((timeMs % COLOR_CYCLE_MS) + COLOR_CYCLE_MS) % COLOR_CYCLE_MS) / COLOR_CYCLE_MS) * n;
   const i = Math.floor(phase);
-  const t = smootherstep(phase - i);
+  const rawT = phase - i;
 
   const p0 = COLORS[((i - 1) % n + n) % n];
   const p1 = COLORS[i % n];
+
   const p2 = COLORS[(i + 1) % n];
   const p3 = COLORS[(i + 2) % n];
 
+  // 블랙/레드 진입은 뚝 끊기듯 즉시 전환
+  const isEnteringBlack = (p2[0] + p2[1] + p2[2]) < 0.01;
+  const isEnteringRed = p2[0] > 0.8 && p2[1] < 0.2 && p2[2] < 0.3;
+  if ((isEnteringBlack || isEnteringRed) && rawT > 0.5) {
+    return [...p2];
+  }
+
+  const t = rawT;
   return [
     Math.max(0, Math.min(1, catmullRom(p0[0], p1[0], p2[0], p3[0], t))),
     Math.max(0, Math.min(1, catmullRom(p0[1], p1[1], p2[1], p3[1], t))),
@@ -85,16 +99,12 @@ function getCycleColor(timeMs) {
   ];
 }
 
-// --- Stamp (offscreen Canvas 2D → WebGL texture) ---
+// --- Stamp (text-layer → WebGL texture) ---
 
-let stampCanvas, stampCtx, stampTexture;
-let emitters = [];
+let stampTexture;
 
 function initStamp(gl, w, h) {
-  stampCanvas = document.createElement('canvas');
-  stampCanvas.width = w;
-  stampCanvas.height = h;
-  stampCtx = stampCanvas.getContext('2d');
+  createTextLayer(w, h);
 
   stampTexture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, stampTexture);
@@ -106,24 +116,14 @@ function initStamp(gl, w, h) {
   gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
-function stampEmitters(gl, timeMs) {
-  const dpr = window.devicePixelRatio || 1;
-  stampCtx.clearRect(0, 0, stampCanvas.width, stampCanvas.height);
-
-  const [r, g, b] = getCycleColor(timeMs);
-  const fontSize = Math.round(200 * dpr);
-  stampCtx.font = `bold ${fontSize}px sans-serif`;
-  stampCtx.textAlign = 'center';
-  stampCtx.textBaseline = 'middle';
-  stampCtx.fillStyle = `rgb(${r * 255}, ${g * 255}, ${b * 255})`;
-
-  for (const e of emitters) {
-    stampCtx.fillText('A', e.x * dpr, e.y * dpr);
-  }
+// 프레임당 1번만 텍스트 래스터 + 텍스처 업로드 (흰색 마스크)
+function uploadStampMask(gl) {
+  const text = getCurrentText();
+  renderText(text ? [text] : [], 0);
 
   gl.bindTexture(gl.TEXTURE_2D, stampTexture);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, stampCanvas);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, getCanvas());
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.bindTexture(gl.TEXTURE_2D, null);
 }
@@ -136,6 +136,8 @@ function init() {
 
   initStamp(gl, gl.drawingBufferWidth, gl.drawingBufferHeight);
 
+  let upFbos = createFBOPair(gl.drawingBufferWidth, gl.drawingBufferHeight);
+
   const vao = gl.createVertexArray();
 
   // Programs
@@ -147,75 +149,138 @@ function init() {
   const uPrevFrame      = gl.getUniformLocation(feedbackProg, 'uPrevFrame');
   const uFeedbackOffset = gl.getUniformLocation(feedbackProg, 'uFeedbackOffset');
   const uScreenTex      = gl.getUniformLocation(screenProg, 'uTex');
+  const uTint           = gl.getUniformLocation(screenProg, 'uTint');
   const uDisplayTex     = gl.getUniformLocation(displayProg, 'uTex');
+  const uResolution     = gl.getUniformLocation(displayProg, 'uResolution');
+  const uDisplayTime    = gl.getUniformLocation(displayProg, 'uTime');
+  const uFeedbackTime   = gl.getUniformLocation(feedbackProg, 'uTime');
+  const uFeedbackRes    = gl.getUniformLocation(feedbackProg, 'uResolution');
 
   // Trail parameters
-  const STEPS = 15;
-  const TOTAL_OFFSET = 0.0135;
+  const STEPS = 24;
+  const TOTAL_OFFSET = 0.0135 * 2 * 0.8 * 1.4;
   const stepOffset = TOTAL_OFFSET / STEPS;
+  const COLOR_SPREAD = 0.5; // 사이클의 50%를 한 프레임에 공간 전개
 
-  // Click → emitter
-  canvas.addEventListener('click', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    emitters.push({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-  });
+  // 텍스트 입력
+  const inputEl = document.getElementById('hidden-input');
+  initInputHandler(inputEl, () => {});
+  canvas.addEventListener('click', () => inputEl.focus());
+  inputEl.focus();
 
   // Resize
   window.addEventListener('resize', () => {
-    stampCanvas.width = gl.drawingBufferWidth;
-    stampCanvas.height = gl.drawingBufferHeight;
+    resizeTextLayer(gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.bindTexture(gl.TEXTURE_2D, stampTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.drawingBufferWidth, gl.drawingBufferHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.bindTexture(gl.TEXTURE_2D, null);
+
+    gl.deleteTexture(upFbos.read.texture);
+    gl.deleteFramebuffer(upFbos.read.framebuffer);
+    gl.deleteTexture(upFbos.write.texture);
+    gl.deleteFramebuffer(upFbos.write.framebuffer);
+    upFbos = createFBOPair(gl.drawingBufferWidth, gl.drawingBufferHeight);
   });
 
   // Frame loop
   function frame() {
     const now = performance.now();
     const fbos = getFBOs();
-    const hasEmitters = emitters.length > 0;
+    const hasText = getCurrentText().length > 0;
+    setFrameViewport();
 
+    // 텍스트 마스크는 프레임당 1번만 업로드
+    if (hasText) uploadStampMask(gl);
+
+    const TRAIL_DIM = 0.96;
+    const drawStampTinted = (color, dim = TRAIL_DIM) => {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(screenProg);
+      gl.uniform3f(uTint, color[0] * dim, color[1] * dim, color[2] * dim);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, stampTexture);
+      gl.uniform1i(uScreenTex, 0);
+      gl.bindVertexArray(vao);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.disable(gl.BLEND);
+    };
+
+    // 피드백 셰이더 불변 유니폼을 루프 밖에서 1회만 설정
+    gl.useProgram(feedbackProg);
+    gl.uniform2f(uFeedbackRes, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.uniform1i(uPrevFrame, 0);
+    gl.activeTexture(gl.TEXTURE0);
+
+    const nowSec = now * 0.001;
+
+    const STAMP_EVERY = 4; // 4스텝마다 stamp (25→7회로 감소)
     for (let s = 0; s <= STEPS; s++) {
-      if (hasEmitters) {
+      if (hasText && s % STAMP_EVERY === 0) {
         const subTime = now - FRAME_MS + (s / STEPS) * FRAME_MS;
-        stampEmitters(gl, subTime);
-        renderToFBO(fbos.read, () => {
-          gl.enable(gl.BLEND);
-          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-          gl.useProgram(screenProg);
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, stampTexture);
-          gl.uniform1i(uScreenTex, 0);
-          gl.bindVertexArray(vao);
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-          gl.disable(gl.BLEND);
-        });
+
+        // 아래 트레일: 정방향 사이클
+        const downColor = getCycleColor(subTime);
+        renderToFBO(fbos.read, () => drawStampTinted(downColor));
+
+        // 위 트레일: 역방향 사이클
+        const upColor = getCycleColor(-subTime);
+        renderToFBO(upFbos.read, () => drawStampTinted(upColor));
       }
 
-      // 마지막 스텝은 stamp만 (이미터 위치 채움)
       if (s < STEPS) {
+        // 아래 방향 피드백
         renderToFBO(fbos.write, () => {
           gl.useProgram(feedbackProg);
-          gl.activeTexture(gl.TEXTURE0);
+          gl.uniform1f(uFeedbackTime, nowSec + s * 0.1);
           gl.bindTexture(gl.TEXTURE_2D, fbos.read.texture);
-          gl.uniform1i(uPrevFrame, 0);
           gl.uniform1f(uFeedbackOffset, stepOffset);
           gl.bindVertexArray(vao);
           gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         });
         swapFBOs();
+
+        // 위 방향 피드백
+        renderToFBO(upFbos.write, () => {
+          gl.useProgram(feedbackProg);
+          gl.uniform1f(uFeedbackTime, nowSec + s * 0.1 + 50.0);
+          gl.bindTexture(gl.TEXTURE_2D, upFbos.read.texture);
+          gl.uniform1f(uFeedbackOffset, -stepOffset);
+          gl.bindVertexArray(vao);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        });
+        const tmp = upFbos.read;
+        upFbos.read = upFbos.write;
+        upFbos.write = tmp;
       }
     }
 
-    // Display
+    // Display: 아래 + 위 트레일 (MAX 합성)
     renderToScreen(() => {
       gl.useProgram(displayProg);
+      gl.uniform2f(uResolution, gl.drawingBufferWidth, gl.drawingBufferHeight);
+      gl.uniform1f(uDisplayTime, now * 0.001);
       gl.activeTexture(gl.TEXTURE0);
+      gl.bindVertexArray(vao);
+
       gl.bindTexture(gl.TEXTURE_2D, fbos.read.texture);
       gl.uniform1i(uDisplayTex, 0);
-      gl.bindVertexArray(vao);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.MAX);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      gl.bindTexture(gl.TEXTURE_2D, upFbos.read.texture);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.disable(gl.BLEND);
     });
+
+    // 원본 텍스트를 최상단에 풀 밝기로 오버레이
+    if (hasText) {
+      const overlayColor = getCycleColor(now);
+      drawStampTinted(overlayColor, 1.0);
+    }
 
     requestAnimationFrame(frame);
   }
