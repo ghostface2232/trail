@@ -3,10 +3,8 @@
  */
 
 let canvas, ctx;
-let dpr = 1;
 
 export function createTextLayer(width, height) {
-  dpr = window.devicePixelRatio || 1;
   canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -84,7 +82,6 @@ export function getCanvas() {
 }
 
 export function resize(width, height) {
-  dpr = window.devicePixelRatio || 1;
   canvas.width = width;
   canvas.height = height;
 }

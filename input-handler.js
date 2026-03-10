@@ -3,15 +3,9 @@
  */
 
 let currentText = '';
-let composing = false;
 
 export function initInputHandler(inputElement, onChange) {
-  inputElement.addEventListener('compositionstart', () => {
-    composing = true;
-  });
-
   inputElement.addEventListener('compositionend', (e) => {
-    composing = false;
     currentText = e.target.value;
     onChange(currentText);
   });

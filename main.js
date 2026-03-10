@@ -45,7 +45,7 @@ function createProgram(gl, vsSrc, fsSrc) {
   return prog;
 }
 
-// --- Color cycle (Catmull-Rom + smootherstep) ---
+// --- Color cycle (Catmull-Rom) ---
 
 const COLORS = [
   [1.0, 1.0, 1.0],    // white-blue flash
@@ -87,10 +87,6 @@ function advanceHueAngle(now) {
   hueTransitionStart = now;
 }
 
-function smootherstep(t) {
-  return t * t * t * (t * (t * 6 - 15) + 10);
-}
-
 function catmullRom(p0, p1, p2, p3, t) {
   const t2 = t * t, t3 = t2 * t;
   return 0.5 * (
@@ -120,11 +116,10 @@ function getCycleColor(timeMs) {
     return [...p2];
   }
 
-  const t = rawT;
   return [
-    Math.max(0, Math.min(1, catmullRom(p0[0], p1[0], p2[0], p3[0], t))),
-    Math.max(0, Math.min(1, catmullRom(p0[1], p1[1], p2[1], p3[1], t))),
-    Math.max(0, Math.min(1, catmullRom(p0[2], p1[2], p2[2], p3[2], t))),
+    Math.max(0, Math.min(1, catmullRom(p0[0], p1[0], p2[0], p3[0], rawT))),
+    Math.max(0, Math.min(1, catmullRom(p0[1], p1[1], p2[1], p3[1], rawT))),
+    Math.max(0, Math.min(1, catmullRom(p0[2], p1[2], p2[2], p3[2], rawT))),
   ];
 }
 
@@ -154,7 +149,6 @@ function uploadStampMask(gl) {
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, getCanvas());
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-  gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
 // --- Init & frame loop ---
@@ -186,12 +180,18 @@ function init() {
   const uFeedbackTime   = gl.getUniformLocation(feedbackProg, 'uTime');
   const uFeedbackRes    = gl.getUniformLocation(feedbackProg, 'uResolution');
 
+  // Sampler uniforms — 항상 TEXTURE0이므로 1회만 설정
+  gl.useProgram(feedbackProg);
+  gl.uniform1i(uPrevFrame, 0);
+  gl.useProgram(screenProg);
+  gl.uniform1i(uScreenTex, 0);
+  gl.useProgram(displayProg);
+  gl.uniform1i(uDisplayTex, 0);
+
   // Trail parameters
   const STEPS = 24;
   const TOTAL_OFFSET = 0.0135 * 2 * 0.8 * 1.4;
   const stepOffset = TOTAL_OFFSET / STEPS;
-  const COLOR_SPREAD = 0.5; // 사이클의 50%를 한 프레임에 공간 전개
-
   // 텍스트 입력
   const inputEl = document.getElementById('hidden-input');
   initInputHandler(inputEl, () => {});
@@ -215,6 +215,20 @@ function init() {
     upFbos = createFBOPair(gl.drawingBufferWidth, gl.drawingBufferHeight);
   });
 
+  // Stamp draw helper (init 스코프에서 1회 생성)
+  const TRAIL_DIM = 0.96;
+  const drawStampTinted = (color, dim = TRAIL_DIM) => {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(screenProg);
+    gl.uniform3f(uTint, color[0] * dim, color[1] * dim, color[2] * dim);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, stampTexture);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.disable(gl.BLEND);
+  };
+
   // Frame loop
   function frame() {
     const now = performance.now();
@@ -226,24 +240,9 @@ function init() {
     // 텍스트 마스크는 프레임당 1번만 업로드
     if (hasText) uploadStampMask(gl);
 
-    const TRAIL_DIM = 0.96;
-    const drawStampTinted = (color, dim = TRAIL_DIM) => {
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.useProgram(screenProg);
-      gl.uniform3f(uTint, color[0] * dim, color[1] * dim, color[2] * dim);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, stampTexture);
-      gl.uniform1i(uScreenTex, 0);
-      gl.bindVertexArray(vao);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      gl.disable(gl.BLEND);
-    };
-
     // 피드백 셰이더 불변 유니폼을 루프 밖에서 1회만 설정
     gl.useProgram(feedbackProg);
     gl.uniform2f(uFeedbackRes, gl.drawingBufferWidth, gl.drawingBufferHeight);
-    gl.uniform1i(uPrevFrame, 0);
     gl.activeTexture(gl.TEXTURE0);
 
     const nowSec = now * 0.001;
@@ -299,7 +298,6 @@ function init() {
       gl.bindVertexArray(vao);
 
       gl.bindTexture(gl.TEXTURE_2D, fbos.read.texture);
-      gl.uniform1i(uDisplayTex, 0);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
       gl.enable(gl.BLEND);
