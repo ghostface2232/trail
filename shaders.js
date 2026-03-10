@@ -92,19 +92,34 @@ void main() {
 }
 `;
 
-/** Display fragment shader — 색수차 + 그레인 + 상하단 블러·비네트 */
+/** Display fragment shader — 색수차 + 그레인 + 상하단 블러·비네트 + hue rotation */
 export const displayFragmentSource = `#version 300 es
 precision highp float;
 in vec2 vUV;
 uniform sampler2D uTex;
 uniform vec2 uResolution;
 uniform float uTime;
+uniform float uHueShift;
 out vec4 fragColor;
 
 float hash(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.x + p3.y) * p3.z);
+}
+
+vec3 rotateHue(vec3 c, float angle) {
+  float cosA = cos(angle);
+  float sinA = sin(angle);
+  // Rodrigues rotation around (1,1,1)/sqrt(3) axis
+  float k = (1.0 - cosA) / 3.0;
+  float s = sinA * 0.57735026919; // 1/sqrt(3)
+  mat3 m = mat3(
+    k + cosA,     k - s,        k + s,
+    k + s,        k + cosA,     k - s,
+    k - s,        k + s,        k + cosA
+  );
+  return clamp(m * c, 0.0, 1.0);
 }
 
 void main() {
@@ -152,6 +167,8 @@ void main() {
 
   float bottom = smoothstep(0.0, 0.3, vUV.y);
   float top = smoothstep(0.0, 0.28, 1.0 - vUV.y);
-  fragColor = vec4(clamp(c * bottom * top, 0.0, 1.0), a);
+  vec3 finalColor = clamp(c * bottom * top, 0.0, 1.0);
+  finalColor = rotateHue(finalColor, uHueShift);
+  fragColor = vec4(finalColor, a);
 }
 `;

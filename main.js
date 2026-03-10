@@ -58,6 +58,35 @@ const COLORS = [
 const COLOR_CYCLE_MS = 2051 / 1.5 / 0.8 / 1.12;
 const FRAME_MS = 1000 / 60;
 
+// --- Hue rotation on click (25% = 90° per click, 0.6s transition) ---
+let hueAngleCurrent = 0;   // 현재 보간된 각도 (radians)
+let hueAngleFrom = 0;
+let hueAngleTo = 0;
+let hueTransitionStart = -Infinity;
+const HUE_TRANSITION_MS = 600;
+const HUE_STEP = Math.PI * 0.5; // 90° = 25% of 360°
+
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function updateHueAngle(now) {
+  const elapsed = now - hueTransitionStart;
+  if (elapsed >= HUE_TRANSITION_MS) {
+    hueAngleCurrent = hueAngleTo;
+  } else {
+    const t = easeInOutCubic(elapsed / HUE_TRANSITION_MS);
+    hueAngleCurrent = hueAngleFrom + (hueAngleTo - hueAngleFrom) * t;
+  }
+}
+
+function advanceHueAngle(now) {
+  updateHueAngle(now);
+  hueAngleFrom = hueAngleCurrent;
+  hueAngleTo += HUE_STEP;
+  hueTransitionStart = now;
+}
+
 function smootherstep(t) {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
@@ -153,6 +182,7 @@ function init() {
   const uDisplayTex     = gl.getUniformLocation(displayProg, 'uTex');
   const uResolution     = gl.getUniformLocation(displayProg, 'uResolution');
   const uDisplayTime    = gl.getUniformLocation(displayProg, 'uTime');
+  const uHueShift       = gl.getUniformLocation(displayProg, 'uHueShift');
   const uFeedbackTime   = gl.getUniformLocation(feedbackProg, 'uTime');
   const uFeedbackRes    = gl.getUniformLocation(feedbackProg, 'uResolution');
 
@@ -165,7 +195,10 @@ function init() {
   // 텍스트 입력
   const inputEl = document.getElementById('hidden-input');
   initInputHandler(inputEl, () => {});
-  canvas.addEventListener('click', () => inputEl.focus());
+  canvas.addEventListener('click', () => {
+    advanceHueAngle(performance.now());
+    inputEl.focus();
+  });
   inputEl.focus();
 
   // Resize
@@ -185,6 +218,7 @@ function init() {
   // Frame loop
   function frame() {
     const now = performance.now();
+    updateHueAngle(now);
     const fbos = getFBOs();
     const hasText = getCurrentText().length > 0;
     setFrameViewport();
@@ -260,6 +294,7 @@ function init() {
       gl.useProgram(displayProg);
       gl.uniform2f(uResolution, gl.drawingBufferWidth, gl.drawingBufferHeight);
       gl.uniform1f(uDisplayTime, now * 0.001);
+      gl.uniform1f(uHueShift, hueAngleCurrent);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindVertexArray(vao);
 
