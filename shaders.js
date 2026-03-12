@@ -71,7 +71,7 @@ void main() {
 
   // 아래로 갈수록 미세하게 어두워짐
   float darken = 1.0 - (1.0 - vUV.y) * 0.003;
-  c.rgb *= darken;
+  c *= darken;
 
   // 매 서브스텝마다 다른 그레인
   float grain = (hash(vUV * 1000.0 + fract(uTime * 7777.0)) - 0.5) * 0.025;
