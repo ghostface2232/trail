@@ -69,13 +69,16 @@ void main() {
   );
   c.rgb = clamp(hueRot * c.rgb, 0.0, 1.0);
 
-  // 아래로 갈수록 미세하게 어두워짐
-  float darken = 1.0 - (1.0 - vUV.y) * 0.003;
+  // 아래로 갈수록 미세하게 어두워짐 — 최소 감쇄를 보장하여 잔상 방지
+  float darken = 1.0 - max((1.0 - vUV.y) * 0.003, 0.001);
   c *= darken;
 
   // 매 서브스텝마다 다른 그레인
   float grain = (hash(vUV * 1000.0 + fract(uTime * 7777.0)) - 0.5) * 0.025;
   c.rgb += grain * c.a;
+
+  // 8비트 FBO 양자화로 인한 잔상 방지: 극히 낮은 알파를 0으로 절삭
+  c *= step(2.0 / 255.0, c.a);
 
   fragColor = c;
 }
