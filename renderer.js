@@ -4,6 +4,7 @@
 
 let gl = null;
 let fbos = null;
+let useHalfFloat = false;
 
 export function getFBOs() {
   return fbos;
@@ -18,6 +19,9 @@ export function initGL(canvas) {
     document.body.appendChild(msg);
     throw new Error('WebGL2 not supported');
   }
+
+  // RGBA16F FBO로 양자화 잔상 방지 — 곱셈 감쇠가 8비트 반올림에 갇히지 않음
+  useHalfFloat = !!gl.getExtension('EXT_color_buffer_half_float');
 
   applyCanvasSize(canvas);
   fbos = createFBOPair(gl.drawingBufferWidth, gl.drawingBufferHeight);
@@ -44,7 +48,11 @@ function applyCanvasSize(canvas) {
 function createFBO(width, height) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  if (useHalfFloat) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, width, height, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  }
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
