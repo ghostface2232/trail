@@ -58,13 +58,15 @@ void main() {
   if (blurRadius < 0.5) {
     cDown = texture(uPrevDown, downUV);
   } else {
-    // 스토캐스틱 2-tap 블러: 피드백 루프가 시간적 누적기이므로 수 프레임에 걸쳐 가우시안과 동등하게 수렴
     float texelX = 1.0 / uResolution.x;
-    vec2 blurHash = hash2(vUV * 777.0 + fract(uTimeDown * 5555.0));
-    float off1 = (blurHash.x - 0.5) * 2.0 * blurRadius;
-    float off2 = (blurHash.y - 0.5) * 2.0 * blurRadius;
-    cDown = (texture(uPrevDown, downUV + vec2(off1 * texelX, 0.0))
-           + texture(uPrevDown, downUV + vec2(off2 * texelX, 0.0))) * 0.5;
+    vec4 sum = vec4(0.0);
+    float total = 0.0;
+    for (float i = -4.0; i <= 4.0; i += 1.0) {
+      float w = exp(-0.5 * i * i / (blurRadius * blurRadius * 0.2));
+      sum += texture(uPrevDown, downUV + vec2(i * texelX * blurRadius, 0.0)) * w;
+      total += w;
+    }
+    cDown = sum / total;
   }
   vec4 aheadDown = texture(uPrevDown, vec2(vUV.x, downUV.y + uFeedbackOffset * 4.0));
   cDown.rgb = mix(cDown.rgb, aheadDown.rgb, 0.015);
@@ -83,13 +85,15 @@ void main() {
   if (blurRadius < 0.5) {
     cUp = texture(uPrevUp, upUV);
   } else {
-    // 스토캐스틱 2-tap 블러 (up trail)
     float texelX = 1.0 / uResolution.x;
-    vec2 blurHash = hash2(vUV * 777.0 + fract(uTimeUp * 5555.0));
-    float off1 = (blurHash.x - 0.5) * 2.0 * blurRadius;
-    float off2 = (blurHash.y - 0.5) * 2.0 * blurRadius;
-    cUp = (texture(uPrevUp, upUV + vec2(off1 * texelX, 0.0))
-         + texture(uPrevUp, upUV + vec2(off2 * texelX, 0.0))) * 0.5;
+    vec4 sum = vec4(0.0);
+    float total = 0.0;
+    for (float i = -4.0; i <= 4.0; i += 1.0) {
+      float w = exp(-0.5 * i * i / (blurRadius * blurRadius * 0.2));
+      sum += texture(uPrevUp, upUV + vec2(i * texelX * blurRadius, 0.0)) * w;
+      total += w;
+    }
+    cUp = sum / total;
   }
   vec4 aheadUp = texture(uPrevUp, vec2(vUV.x, upUV.y - uFeedbackOffset * 4.0));
   cUp.rgb = mix(cUp.rgb, aheadUp.rgb, 0.015);
