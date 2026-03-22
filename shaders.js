@@ -9,78 +9,101 @@ void main() {
 }
 `;
 
-/** Feedback fragment shader — y오프셋, 상하단 감속, hue drift, grain */
-export const feedbackFragmentSource = `#version 300 es
+/** MRT Feedback fragment shader — down+up 트레일을 단일 패스로 처리 */
+export const feedbackMRTFragmentSource = `#version 300 es
 precision highp float;
 in vec2 vUV;
-uniform sampler2D uPrevFrame;
+uniform sampler2D uPrevDown;
+uniform sampler2D uPrevUp;
 uniform float uFeedbackOffset;
-uniform float uTime;
+uniform float uTimeDown;
+uniform float uTimeUp;
 uniform vec2 uResolution;
-out vec4 fragColor;
+layout(location = 0) out vec4 fragDown;
+layout(location = 1) out vec4 fragUp;
 
-float hash(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+vec2 hash2(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
   p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
+  return fract((p3.xx + p3.yz) * p3.zy);
 }
 
 void main() {
-  // 중앙(0.5)=풀스피드, 상하단(0/1)=거의 정지
+  // === 공통 계산 (down/up 모두 vUV.y에만 의존) ===
   float distFromCenter = abs(vUV.y - 0.5) * 2.0;
   float slow = 1.0 - distFromCenter * distFromCenter;
-  // 서브픽셀 지터로 스텝 사이 줄무늬 방지
-  float jitter = (hash(vUV * 1000.0 + fract(uTime * 3333.0)) - 0.5) / uResolution.y;
-  vec2 offsetUV = vec2(vUV.x, vUV.y + uFeedbackOffset * slow + jitter);
 
-  // 상하단 접근 시 서서히 확대 (60% 이상 구간부터 ease)
   float edgeDist = max(smoothstep(0.3, 0.0, vUV.y), smoothstep(0.3, 0.0, 1.0 - vUV.y));
   float zoomAmt = edgeDist * edgeDist * 0.005;
   vec2 zoomCenter = vec2(0.5, vUV.y > 0.5 ? 1.0 : 0.0);
-  offsetUV = mix(offsetUV, zoomCenter, zoomAmt);
 
-  // 상하단 접근 시 수평 블러로 퍼짐
   float edgeBlur = max(smoothstep(0.3, 0.0, vUV.y), smoothstep(0.27, 0.0, 1.0 - vUV.y));
   float blurRadius = edgeBlur * 6.0;
-  vec4 c;
+
+  float darken = 1.0 - max((1.0 - vUV.y) * 0.003, 0.001);
+
+  const mat3 hueRot = mat3(
+    0.99958, 0.00186, -0.00103,
+   -0.00103, 0.99958,  0.00186,
+    0.00186, -0.00103, 0.99958
+  );
+
+  // === Down trail (+offset) ===
+  vec2 hDown = hash2(vUV * 1000.0 + fract(uTimeDown * 3333.0));
+  float jitterDown = (hDown.x - 0.5) / uResolution.y;
+  vec2 downUV = vec2(vUV.x, vUV.y + uFeedbackOffset * slow + jitterDown);
+  downUV = mix(downUV, zoomCenter, zoomAmt);
+
+  vec4 cDown;
   if (blurRadius < 0.5) {
-    c = texture(uPrevFrame, offsetUV);
+    cDown = texture(uPrevDown, downUV);
   } else {
     float texelX = 1.0 / uResolution.x;
     vec4 sum = vec4(0.0);
     float total = 0.0;
     for (float i = -4.0; i <= 4.0; i += 1.0) {
       float w = exp(-0.5 * i * i / (blurRadius * blurRadius * 0.2));
-      sum += texture(uPrevFrame, offsetUV + vec2(i * texelX * blurRadius, 0.0)) * w;
+      sum += texture(uPrevDown, downUV + vec2(i * texelX * blurRadius, 0.0)) * w;
       total += w;
     }
-    c = sum / total;
+    cDown = sum / total;
   }
+  vec4 aheadDown = texture(uPrevDown, vec2(vUV.x, downUV.y + uFeedbackOffset * 4.0));
+  cDown.rgb = mix(cDown.rgb, aheadDown.rgb, 0.015);
+  cDown.rgb = clamp(hueRot * cDown.rgb, 0.0, 1.0);
+  cDown *= darken;
+  cDown.rgb += (hDown.y - 0.5) * 0.025 * cDown.a;
+  cDown *= step(2.0 / 255.0, cDown.a);
 
-  // 앞쪽(흐름 방향) 컬러를 살짝 따라가려는 shift
-  vec4 ahead = texture(uPrevFrame, vec2(vUV.x, offsetUV.y + uFeedbackOffset * 4.0));
-  c.rgb = mix(c.rgb, ahead.rgb, 0.015);
+  // === Up trail (-offset) ===
+  vec2 hUp = hash2(vUV * 1000.0 + fract(uTimeUp * 3333.0));
+  float jitterUp = (hUp.x - 0.5) / uResolution.y;
+  vec2 upUV = vec2(vUV.x, vUV.y - uFeedbackOffset * slow + jitterUp);
+  upUV = mix(upUV, zoomCenter, zoomAmt);
 
-  // 미세한 hue rotation (프리컴파일된 상수 행렬, angle=0.005)
-  const mat3 hueRot = mat3(
-    0.99958, 0.00186, -0.00103,
-   -0.00103, 0.99958,  0.00186,
-    0.00186, -0.00103, 0.99958
-  );
-  c.rgb = clamp(hueRot * c.rgb, 0.0, 1.0);
+  vec4 cUp;
+  if (blurRadius < 0.5) {
+    cUp = texture(uPrevUp, upUV);
+  } else {
+    float texelX = 1.0 / uResolution.x;
+    vec4 sum = vec4(0.0);
+    float total = 0.0;
+    for (float i = -4.0; i <= 4.0; i += 1.0) {
+      float w = exp(-0.5 * i * i / (blurRadius * blurRadius * 0.2));
+      sum += texture(uPrevUp, upUV + vec2(i * texelX * blurRadius, 0.0)) * w;
+      total += w;
+    }
+    cUp = sum / total;
+  }
+  vec4 aheadUp = texture(uPrevUp, vec2(vUV.x, upUV.y - uFeedbackOffset * 4.0));
+  cUp.rgb = mix(cUp.rgb, aheadUp.rgb, 0.015);
+  cUp.rgb = clamp(hueRot * cUp.rgb, 0.0, 1.0);
+  cUp *= darken;
+  cUp.rgb += (hUp.y - 0.5) * 0.025 * cUp.a;
+  cUp *= step(2.0 / 255.0, cUp.a);
 
-  // 아래로 갈수록 미세하게 어두워짐 — 최소 감쇄를 보장하여 잔상 방지
-  float darken = 1.0 - max((1.0 - vUV.y) * 0.003, 0.001);
-  c *= darken;
-
-  // 매 서브스텝마다 다른 그레인
-  float grain = (hash(vUV * 1000.0 + fract(uTime * 7777.0)) - 0.5) * 0.025;
-  c.rgb += grain * c.a;
-
-  // 8비트 FBO 양자화로 인한 잔상 방지: 극히 낮은 알파를 0으로 절삭
-  c *= step(2.0 / 255.0, c.a);
-
-  fragColor = c;
+  fragDown = cDown;
+  fragUp = cUp;
 }
 `;
 

@@ -9,7 +9,7 @@ import {
 
 import {
   vertexShaderSource,
-  feedbackFragmentSource,
+  feedbackMRTFragmentSource,
   screenFragmentSource,
   displayFragmentSource,
 } from './shaders.js';
@@ -164,34 +164,49 @@ function init() {
   const vao = gl.createVertexArray();
 
   // Programs
-  const feedbackProg = createProgram(gl, vertexShaderSource, feedbackFragmentSource);
-  const screenProg   = createProgram(gl, vertexShaderSource, screenFragmentSource);
-  const displayProg  = createProgram(gl, vertexShaderSource, displayFragmentSource);
+  const feedbackMRTProg = createProgram(gl, vertexShaderSource, feedbackMRTFragmentSource);
+  const screenProg      = createProgram(gl, vertexShaderSource, screenFragmentSource);
+  const displayProg     = createProgram(gl, vertexShaderSource, displayFragmentSource);
 
-  // Uniform locations
-  const uPrevFrame      = gl.getUniformLocation(feedbackProg, 'uPrevFrame');
-  const uFeedbackOffset = gl.getUniformLocation(feedbackProg, 'uFeedbackOffset');
+  // MRT Feedback uniform locations
+  const uPrevDown       = gl.getUniformLocation(feedbackMRTProg, 'uPrevDown');
+  const uPrevUp         = gl.getUniformLocation(feedbackMRTProg, 'uPrevUp');
+  const uFeedbackOffset = gl.getUniformLocation(feedbackMRTProg, 'uFeedbackOffset');
+  const uTimeDown       = gl.getUniformLocation(feedbackMRTProg, 'uTimeDown');
+  const uTimeUp         = gl.getUniformLocation(feedbackMRTProg, 'uTimeUp');
+  const uFeedbackRes    = gl.getUniformLocation(feedbackMRTProg, 'uResolution');
+
+  // Screen (stamp) uniform locations
   const uScreenTex      = gl.getUniformLocation(screenProg, 'uTex');
   const uTint           = gl.getUniformLocation(screenProg, 'uTint');
+
+  // Display uniform locations
   const uDisplayTex     = gl.getUniformLocation(displayProg, 'uTex');
   const uResolution     = gl.getUniformLocation(displayProg, 'uResolution');
   const uDisplayTime    = gl.getUniformLocation(displayProg, 'uTime');
   const uHueShift       = gl.getUniformLocation(displayProg, 'uHueShift');
-  const uFeedbackTime   = gl.getUniformLocation(feedbackProg, 'uTime');
-  const uFeedbackRes    = gl.getUniformLocation(feedbackProg, 'uResolution');
 
-  // Sampler uniforms — 항상 TEXTURE0이므로 1회만 설정
-  gl.useProgram(feedbackProg);
-  gl.uniform1i(uPrevFrame, 0);
+  // Sampler uniforms — 1회만 설정
+  gl.useProgram(feedbackMRTProg);
+  gl.uniform1i(uPrevDown, 0);  // TEXTURE0
+  gl.uniform1i(uPrevUp, 1);    // TEXTURE1
   gl.useProgram(screenProg);
   gl.uniform1i(uScreenTex, 0);
   gl.useProgram(displayProg);
   gl.uniform1i(uDisplayTex, 0);
 
+  // MRT framebuffer (텍스처는 매 스텝 re-attach)
+  const mrtFB = gl.createFramebuffer();
+
   // Trail parameters
   const STEPS = 24;
   const TOTAL_OFFSET = 0.0135 * 2 * 0.8 * 1.4;
   const stepOffset = TOTAL_OFFSET / STEPS;
+
+  // 유휴 감지 — 4초 무입력 시 피드백 스킵
+  const IDLE_TIMEOUT_MS = 4000;
+  let lastActiveTime = -Infinity;
+
   // 텍스트 입력
   const inputEl = document.getElementById('hidden-input');
   initInputHandler(inputEl, () => {});
@@ -237,54 +252,63 @@ function init() {
     const hasText = getCurrentText().length > 0;
     setFrameViewport();
 
-    // 텍스트 마스크는 프레임당 1번만 업로드
-    if (hasText) uploadStampMask(gl);
+    // 유휴 감지: 텍스트가 있으면 활성 시간 갱신
+    if (hasText) lastActiveTime = now;
+    const isIdle = (now - lastActiveTime) > IDLE_TIMEOUT_MS;
 
-    // 피드백 셰이더 불변 유니폼을 루프 밖에서 1회만 설정
-    gl.useProgram(feedbackProg);
-    gl.uniform2f(uFeedbackRes, gl.drawingBufferWidth, gl.drawingBufferHeight);
-    gl.activeTexture(gl.TEXTURE0);
+    // 피드백 루프는 유휴 상태가 아닐 때만 실행
+    if (!isIdle) {
+      // 텍스트 마스크는 프레임당 1번만 업로드
+      if (hasText) uploadStampMask(gl);
 
-    const nowSec = now * 0.001;
+      // MRT 피드백 셰이더 불변 유니폼을 루프 밖에서 1회만 설정
+      gl.useProgram(feedbackMRTProg);
+      gl.uniform2f(uFeedbackRes, gl.drawingBufferWidth, gl.drawingBufferHeight);
+      gl.uniform1f(uFeedbackOffset, stepOffset);
 
-    const STAMP_EVERY = 2; // 2스텝마다 stamp
-    for (let s = 0; s <= STEPS; s++) {
-      if (hasText && s % STAMP_EVERY === 0) {
-        const subTime = now - FRAME_MS + (s / STEPS) * FRAME_MS;
+      const nowSec = now * 0.001;
 
-        // 아래 트레일: 정방향 사이클
-        const downColor = getCycleColor(subTime);
-        renderToFBO(fbos.read, () => drawStampTinted(downColor));
+      const STAMP_EVERY = 2; // 2스텝마다 stamp
+      for (let s = 0; s <= STEPS; s++) {
+        if (hasText && s % STAMP_EVERY === 0) {
+          const subTime = now - FRAME_MS + (s / STEPS) * FRAME_MS;
 
-        // 위 트레일: 역방향 사이클
-        const upColor = getCycleColor(-subTime);
-        renderToFBO(upFbos.read, () => drawStampTinted(upColor));
-      }
+          // 아래 트레일: 정방향 사이클
+          const downColor = getCycleColor(subTime);
+          renderToFBO(fbos.read, () => drawStampTinted(downColor));
 
-      if (s < STEPS) {
-        // 아래 방향 피드백
-        renderToFBO(fbos.write, () => {
-          gl.useProgram(feedbackProg);
-          gl.uniform1f(uFeedbackTime, nowSec + s * 0.1);
+          // 위 트레일: 역방향 사이클
+          const upColor = getCycleColor(-subTime);
+          renderToFBO(upFbos.read, () => drawStampTinted(upColor));
+        }
+
+        if (s < STEPS) {
+          // MRT 피드백: down + up 동시 처리
+          gl.bindFramebuffer(gl.FRAMEBUFFER, mrtFB);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbos.write.texture, 0);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, upFbos.write.texture, 0);
+          gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+
+          gl.useProgram(feedbackMRTProg);
+          gl.uniform1f(uTimeDown, nowSec + s * 0.1);
+          gl.uniform1f(uTimeUp, nowSec + s * 0.1 + 50.0);
+
+          gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, fbos.read.texture);
-          gl.uniform1f(uFeedbackOffset, stepOffset);
-          gl.bindVertexArray(vao);
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        });
-        swapFBOs();
-
-        // 위 방향 피드백
-        renderToFBO(upFbos.write, () => {
-          gl.useProgram(feedbackProg);
-          gl.uniform1f(uFeedbackTime, nowSec + s * 0.1 + 50.0);
+          gl.activeTexture(gl.TEXTURE1);
           gl.bindTexture(gl.TEXTURE_2D, upFbos.read.texture);
-          gl.uniform1f(uFeedbackOffset, -stepOffset);
+
           gl.bindVertexArray(vao);
           gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        });
-        const tmp = upFbos.read;
-        upFbos.read = upFbos.write;
-        upFbos.write = tmp;
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+          // 양쪽 FBO 스왑
+          swapFBOs();
+          const tmp = upFbos.read;
+          upFbos.read = upFbos.write;
+          upFbos.write = tmp;
+        }
       }
     }
 
