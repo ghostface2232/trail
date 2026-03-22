@@ -5,6 +5,7 @@
 let gl = null;
 let fbos = null;
 let useHalfFloat = false;
+let fbWidth = 0, fbHeight = 0; // 피드백 FBO 해상도 (디스플레이의 절반)
 
 export function getFBOs() {
   return fbos;
@@ -24,11 +25,15 @@ export function initGL(canvas) {
   useHalfFloat = !!gl.getExtension('EXT_color_buffer_half_float');
 
   applyCanvasSize(canvas);
-  fbos = createFBOPair(gl.drawingBufferWidth, gl.drawingBufferHeight);
+  fbWidth = Math.max(1, gl.drawingBufferWidth >> 1);
+  fbHeight = Math.max(1, gl.drawingBufferHeight >> 1);
+  fbos = createFBOPair(fbWidth, fbHeight);
 
   window.addEventListener('resize', () => {
     applyCanvasSize(canvas);
-    resizeFBOs(gl.drawingBufferWidth, gl.drawingBufferHeight);
+    fbWidth = Math.max(1, gl.drawingBufferWidth >> 1);
+    fbHeight = Math.max(1, gl.drawingBufferHeight >> 1);
+    resizeFBOs(fbWidth, fbHeight);
   });
 
   return gl;
@@ -88,8 +93,18 @@ function resizeFBOs(width, height) {
   fbos = createFBOPair(width, height);
 }
 
-/** 프레임 시작 시 1회 호출 — viewport를 매 FBO 바인드마다 반복하지 않음 */
-export function setFrameViewport() {
+/** 피드백 FBO 해상도 반환 */
+export function getFeedbackSize() {
+  return { width: fbWidth, height: fbHeight };
+}
+
+/** 피드백 FBO 렌더링용 뷰포트 (반해상도) */
+export function setFeedbackViewport() {
+  gl.viewport(0, 0, fbWidth, fbHeight);
+}
+
+/** 디스플레이/스크린 렌더링용 뷰포트 (풀해상도) */
+export function setDisplayViewport() {
   gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
 }
 
