@@ -4,7 +4,8 @@
 
 import {
   initGL, getFBOs, createFBOPair,
-  swapFBOs, renderToFBO, renderToScreen, setFrameViewport,
+  swapFBOs, renderToFBO, renderToScreen,
+  getFeedbackSize, setFeedbackViewport, setDisplayViewport,
 } from './renderer.js';
 
 import {
@@ -159,7 +160,8 @@ function init() {
 
   initStamp(gl, gl.drawingBufferWidth, gl.drawingBufferHeight);
 
-  let upFbos = createFBOPair(gl.drawingBufferWidth, gl.drawingBufferHeight);
+  const fbSize = getFeedbackSize();
+  let upFbos = createFBOPair(fbSize.width, fbSize.height);
 
   const vao = gl.createVertexArray();
 
@@ -227,7 +229,8 @@ function init() {
     gl.deleteFramebuffer(upFbos.read.framebuffer);
     gl.deleteTexture(upFbos.write.texture);
     gl.deleteFramebuffer(upFbos.write.framebuffer);
-    upFbos = createFBOPair(gl.drawingBufferWidth, gl.drawingBufferHeight);
+    const newFbSize = getFeedbackSize();
+    upFbos = createFBOPair(newFbSize.width, newFbSize.height);
   });
 
   // Stamp draw helper (init 스코프에서 1회 생성)
@@ -250,7 +253,6 @@ function init() {
     updateHueAngle(now);
     const fbos = getFBOs();
     const hasText = getCurrentText().length > 0;
-    setFrameViewport();
 
     // 유휴 감지: 텍스트가 있으면 활성 시간 갱신
     if (hasText) lastActiveTime = now;
@@ -258,12 +260,16 @@ function init() {
 
     // 피드백 루프는 유휴 상태가 아닐 때만 실행
     if (!isIdle) {
-      // 텍스트 마스크는 프레임당 1번만 업로드
+      // 텍스트 마스크는 프레임당 1번만 업로드 (풀해상도 텍스처)
       if (hasText) uploadStampMask(gl);
+
+      // 피드백 FBO는 반해상도 — 뷰포트 전환
+      const curFbSize = getFeedbackSize();
+      setFeedbackViewport();
 
       // MRT 피드백 셰이더 불변 유니폼을 루프 밖에서 1회만 설정
       gl.useProgram(feedbackMRTProg);
-      gl.uniform2f(uFeedbackRes, gl.drawingBufferWidth, gl.drawingBufferHeight);
+      gl.uniform2f(uFeedbackRes, curFbSize.width, curFbSize.height);
       gl.uniform1f(uFeedbackOffset, stepOffset);
 
       const nowSec = now * 0.001;
@@ -312,7 +318,10 @@ function init() {
       }
     }
 
-    // Display: 아래 + 위 트레일 (MAX 합성)
+    // 디스플레이는 풀해상도로 전환
+    setDisplayViewport();
+
+    // Display: 아래 + 위 트레일 (MAX 합성) — 반해상도 FBO를 바이리니어 업샘플
     renderToScreen(() => {
       gl.useProgram(displayProg);
       gl.uniform2f(uResolution, gl.drawingBufferWidth, gl.drawingBufferHeight);
